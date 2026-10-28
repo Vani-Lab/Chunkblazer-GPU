@@ -34,11 +34,14 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.gameval.VarPlayerID;
+import net.runelite.client.audio.AudioPlayer;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.events.PluginMessage;
@@ -74,8 +77,16 @@ public class ChunkBlazerGpuAddon
 	static final String MESSAGE_NAMESPACE = "chunkblazer";
 	static final String SWEEP_STARTED = "unlockSweepStarted";
 	static final String SWEEP_FINISHED = "unlockSweepFinished";
-	// Regions whose sweep is a test ("Play Unlock On Test Chunk").
-	private final Set<Integer> testSweeps = new HashSet<>();
+	@Inject
+	private AudioPlayer audioPlayer;
+	private long lastSoundMs;
+	// The unlock sound's own thread.
+	private final ExecutorService sounds = Executors.newSingleThreadExecutor(r ->
+	{
+		Thread thread = new Thread(r, "ChunkBlazer GPU sounds");
+		thread.setDaemon(true);
+		return thread;
+	});
 
 	// ---------------------------------------------------------------------
 	// SHARED CONTRACT WITH THE MAIN ChunkBlazer PLUGIN (keep in sync!)
@@ -185,7 +196,6 @@ public class ChunkBlazerGpuAddon
 		isValid = false;
 		glProgram = 0;
 		unlockStartMs.clear();
-		testSweeps.clear();
 		sweepOrigin.clear();
 		peekSweeps.clear();
 		lastUnlocked = null;
@@ -438,10 +448,9 @@ public class ChunkBlazerGpuAddon
 			// the main plugin doesn't keep its cards held.
 			for (int region : unlockStartMs.keySet())
 			{
-				post(SWEEP_FINISHED, region, testSweeps.contains(region));
+				post(SWEEP_FINISHED, region);
 			}
 			unlockStartMs.clear();
-			testSweeps.clear();
 		}
 		else if (config.gpuUnlockSweep())
 		{
@@ -453,7 +462,7 @@ public class ChunkBlazerGpuAddon
 			{
 				for (int region : added)
 				{
-					startAnimation(region, now, false);
+					startAnimation(region, now);
 				}
 			}
 		}
@@ -468,35 +477,28 @@ public class ChunkBlazerGpuAddon
 			if (now - e.getValue() >= duration)
 			{
 				it.remove();
-				post(SWEEP_FINISHED, e.getKey(), testSweeps.remove(e.getKey()));
+				post(SWEEP_FINISHED, e.getKey());
 			}
 		}
 		sweepOrigin.keySet().removeIf(r -> !unlockStartMs.containsKey(r));
 		peekSweeps.removeIf(r -> !unlockStartMs.containsKey(r));
 	}
 
-	private void post(String name, int regionId, boolean test)
+	private void post(String name, int regionId)
 	{
 		Map<String, Object> data = new HashMap<>();
 		data.put("regionId", regionId);
-		data.put("test", test);
+		data.put("test", false);
 		// How long a sweep runs, so ChunkBlazer can deal its cards before it ends.
 		data.put("durationMs", (long) config.gpuUnlockDuration());
 		eventBus.post(new PluginMessage(MESSAGE_NAMESPACE, name, data));
 	}
 
-	private void startAnimation(int regionId, long now, boolean test)
+	private void startAnimation(int regionId, long now)
 	{
+		playUnlockSound();
 		unlockStartMs.put(regionId, now);
-		if (test)
-		{
-			testSweeps.add(regionId);
-		}
-		else
-		{
-			testSweeps.remove(regionId);
-		}
-		post(SWEEP_STARTED, regionId, test);
+		post(SWEEP_STARTED, regionId);
 		// Unlocking the chunk the player has the doorway open into: the sweep carries on from
 		// that doorway instead of the wall and grey snapping back first.
 		if (liveDoor != null && liveDoor.region == regionId)
@@ -544,6 +546,38 @@ public class ChunkBlazerGpuAddon
 	private static float rise(float m)
 	{
 		return 1f - (1f - m) * (1f - m) * (1f - m);
+	}
+
+	/**
+	 * The unlock sound as the sweep starts: the wall breaking, then the lava surging out and
+	 * cooling. At ChunkBlazer's Task Sound Volume, off its own thread (opening a sound line
+	 * can take a moment).
+	 */
+	private void playUnlockSound()
+	{
+		long now = System.currentTimeMillis();
+		// Several chunks unlocking together sweep at once: one sound for them.
+		if (!config.gpuSweepSound() || !config.gpuUnlockSweep() || now - lastSoundMs < 1000)
+		{
+			return;
+		}
+		lastSoundMs = now;
+		Integer volume = configManager.getConfiguration(CHUNKBLAZER_GROUP, "taskCompletionSoundVolume", Integer.class);
+		float share = Math.max(0.001f, Math.min(1f, (volume == null ? 3 : volume) / 100f));
+		float gain = (float) (Math.log10(share) * 20);
+		sounds.execute(() -> play("sounds/unlock.wav", gain));
+	}
+
+	private void play(String path, float gain)
+	{
+		try
+		{
+			audioPlayer.play(ChunkBlazerGpuAddon.class, path, gain);
+		}
+		catch (Exception e)
+		{
+			log.warn("Couldn't play {}", path, e);
+		}
 	}
 
 	/** Eased 0..1 progress for a region that is animating, or -1 if it isn't. */

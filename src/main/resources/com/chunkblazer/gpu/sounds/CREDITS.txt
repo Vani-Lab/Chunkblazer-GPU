@@ -1,0 +1,4 @@
+ChunkBlazer GPU sounds
+
+The chunk unlock sounds (the wall breaking, then the lava: its roar, bubbles, crackle and hiss)
+are original and synthesised.

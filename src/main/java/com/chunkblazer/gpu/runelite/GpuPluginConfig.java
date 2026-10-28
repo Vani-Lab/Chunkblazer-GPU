@@ -336,6 +336,19 @@ public interface GpuPluginConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		keyName = "gpuSweepSound",
+		name = "Unlock Sound",
+		description = "A sound as the unlock sweep starts: the wall breaking, then the lava surging out from you. "
+			+ "Played at ChunkBlazer's Task Sound Volume.",
+		section = unlockAnimSection,
+		position = 1
+	)
+	default boolean gpuSweepSound()
+	{
+		return true;
+	}
+
 	@Range(min = 250, max = 10000)
 	@Units(Units.MILLISECONDS)
 	@ConfigItem(
