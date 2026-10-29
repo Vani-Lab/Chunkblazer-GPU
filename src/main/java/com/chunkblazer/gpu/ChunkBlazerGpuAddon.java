@@ -77,6 +77,7 @@ public class ChunkBlazerGpuAddon
 	static final String MESSAGE_NAMESPACE = "chunkblazer";
 	static final String SWEEP_STARTED = "unlockSweepStarted";
 	static final String SWEEP_FINISHED = "unlockSweepFinished";
+	static final String SWEEP_SKIPPED = "unlockSweepSkipped";
 	@Inject
 	private AudioPlayer audioPlayer;
 	private long lastSoundMs;
@@ -301,7 +302,7 @@ public class ChunkBlazerGpuAddon
 		// Snapshot unlocked-region set once per frame from the config string.
 		Set<Integer> unlocked = readUnlockedRegionIds();
 		long now = System.currentTimeMillis();
-		trackNewUnlocks(unlocked, now);
+		trackNewUnlocks(unlocked, now, mapRegions);
 		uploadUnlockAnimUniforms();
 
 		// Don't grey out instanced areas (raids, GoTR, etc.) when the instance
@@ -439,7 +440,7 @@ public class ChunkBlazerGpuAddon
 	 * read after login or an RS profile switch, or for a large batch (that's a
 	 * progress load, not the player buying chunks).
 	 */
-	private void trackNewUnlocks(Set<Integer> unlocked, long now)
+	private void trackNewUnlocks(Set<Integer> unlocked, long now, int[] inScene)
 	{
 		String profileKey = configManager.getRSProfileKey();
 		if (lastUnlocked == null || !Objects.equals(profileKey, lastProfileKey))
@@ -462,7 +463,17 @@ public class ChunkBlazerGpuAddon
 			{
 				for (int region : added)
 				{
-					startAnimation(region, now);
+					if (contains(inScene, region))
+					{
+						startAnimation(region, now);
+					}
+					else
+					{
+						// Out of sight (unlocked from the world map, far off): no sweep to watch, so
+						// ChunkBlazer's sign and cards come straight away.
+						playUnlockSound();
+						post(SWEEP_SKIPPED, region);
+					}
 				}
 			}
 		}
@@ -482,6 +493,21 @@ public class ChunkBlazerGpuAddon
 		}
 		sweepOrigin.keySet().removeIf(r -> !unlockStartMs.containsKey(r));
 		peekSweeps.removeIf(r -> !unlockStartMs.containsKey(r));
+	}
+
+	private static boolean contains(int[] regions, int region)
+	{
+		if (regions != null)
+		{
+			for (int r : regions)
+			{
+				if (r == region)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private void post(String name, int regionId)
